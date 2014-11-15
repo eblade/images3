@@ -1,0 +1,229 @@
+#!/usr/bin/env python3
+
+import os, sys, glob
+from optparse import OptionParser
+from bottle import get, put, run, debug, template, static_file, request, redirect, post, HTTPError
+import json
+
+# Options
+from images.entry import Entry
+
+parser = OptionParser(usage="images")
+parser.add_option('-f', '--root', dest='root', default=os.getenv('IMAGES_ROOT', None),
+    help='specify a root folder to use when starting (env $IMAGES_ROOT)')
+
+options, args = parser.parse_args()
+
+from images.directory import Directory
+from images.scanner import Scanner
+from images.browser import Browser
+
+basepath = options.root or '.'
+directory_file = os.path.join(basepath, ".directory.json")
+settings_file = os.path.join(basepath, ".settings.json")
+directory = Directory(basepath)
+
+# Load settings
+if os.path.exists(settings_file):
+    directory.load_settings(settings_file)
+else:
+    directory.settings_file = settings_file
+
+# Load directory
+if os.path.exists(directory_file):
+    directory.load(directory_file)
+    print("Loaded directory %s with %i entries" % (directory_file, len(directory.entries)))
+else:
+    directory.directory_file = directory_file
+    print("Creating directory %s" % directory_file)
+
+# Scan targetted directory
+scanner = Scanner(basepath, ext=directory.settings.get('extension_filter', []))
+
+A2Z = ''.join([chr(x) for x in range(65, 91)])
+a2z = A2Z.lower()
+
+def read_filter(flt):
+    incf = ''
+    excf = ''
+    for c in flt:
+        if c in A2Z:
+            if c not in incf:
+                incf += c
+        elif c in a2z:
+            excf += c.upper()
+    if 'X' not in incf and 'X' not in excf and '+' not in flt:
+        excf += 'X'
+    return incf, excf
+
+@get('/')
+def get_default():
+    return redirect('/list/M')
+
+@get('/list/<flt>')
+def get_list(flt):
+    incf, excf = read_filter(flt)
+    entries = list(directory.get_filtered(incf, excf))
+    print(entries)
+    return template('templates/grid.tpl', base='/view:'+flt.replace('M', '-'),
+                    title="%i entries, filtered on %s" % (len(entries), flt), entries=entries,
+                    collection=None, top="/list/M", flt=(flt.replace('M', '') or '-'), entry=None)
+
+@get('/date/<date>')
+def get_list(date):
+    entries = list(directory.get_date(date))
+    return template('templates/grid.tpl', base='/view:-', title="%i entries, filtered on %s" % (len(entries), date),
+                    entries=entries, top='/list/M', flt='-', entry=None, collection=None)
+
+@get('/view:<flt>/<path:path>')
+def get_view(flt, path, original_query=None):
+    incf, excf = read_filter(flt)
+    entry = directory[path]
+    query = original_query if original_query is not None else request.query
+    print(dict(query))
+    if entry.entry_type == 'collection':
+        print("COLLECTION")
+        browser = Browser(directory)
+        browser.load(path)
+        entries = browser.get_filtered(incf, excf)
+        return template('templates/grid.tpl', base='/view:'+(flt.replace('M', '') or '-'), title=browser.title_msg,
+                        entries=[(entry.filename, entry) for entry in entries], collection=path,
+                        top='/list/M', flt=(flt.replace('M', '') or '-'), entry=entry)
+    elif entry.entry_type == 'image':
+        n = int(query.get('index', 0))
+        collection = query.get('collection')
+        menupath = '/menu:%s/%s' % ((flt.replace('M', '') or '-'), path)
+        if collection not in (None, 'None'):
+            browser = Browser(directory)
+            browser.load(collection)
+            keys = list(browser.get_filtered_keys(incf, excf))
+            if n > 0:
+                prevpath = "%s?collection=%s&index=%i" % (keys[n-1], collection, n-1 )
+            else:
+                prevpath = None
+            if n < len(keys) - 1:
+                nextpath = "%s?collection=%s&index=%i" % (keys[n+1], collection, n+1 )
+            else:
+                nextpath = None
+            menupath = '%s?collection=%s&index=%i' % (menupath, collection, n)
+        else:
+            prevpath = None
+            nextpath = None
+        width, height = 'auto', '100%'
+        return template('templates/view.tpl', base='/view:'+(flt.replace('M', '') or '-'), entry=entry,
+                        collection=collection, nextpath=nextpath, prevpath=prevpath, path=path,
+                        width=width, height=height, menu=menupath)
+
+@put('/toggle:<cat>/<path:path>')
+def toggle_cat(cat, path):
+    entry = directory[path]
+    return entry.toggle_category(cat, directory)
+
+@put('/save')
+def save():
+    directory.save(directory_file)
+
+@get('/menu:<flt>/<path:path>')
+def menu(flt, path):
+    incf, excf = read_filter(flt)
+    entry = directory[path]
+    query = request.query
+    n = int(query.get('index', 0))
+    collection = query.get('collection')
+    collections = sorted(list(directory.get_filtered('M', 'X' if 'X' in excf else '')))
+    return template('templates/menu.tpl', collections=collections, collection=collection, key=path,
+                    query='?collection=%s&index=%s' % (collection, n),
+                    base='/view:'+(flt.replace('M', '') or '-'), entry=entry)
+
+@post('/append/<path:path>')
+def append(path):
+    browser = Browser(directory)
+    browser.load(path)
+    entry = directory[request.query.get('entry')]
+    browser.entries.append(entry)
+    browser.save()
+    return 'Entry added'
+
+@get('/collection:flt')
+def create_collection_form(flt):
+    return template('templates/collection.tpl', top='/', created_name=None, created_link=None,
+                    flt=(flt.replace('M', '') or '-'))
+
+@post('/collection:<flt>')
+def create_collection(flt):
+    data = request.forms
+    filename = data.get('filename')
+    if filename == '':
+        raise HTTPError(401, "Must give filename")
+    name = data.get('name')
+    if name == '':
+        name = filename
+    entry_filter = data.get('filter')
+    date = data.get('date')
+
+    filename = filename + '.collection'
+    if os.path.exists(os.path.join(basepath, filename)):
+        raise HTTPError(409, "File exists '%s'" % filename)
+
+    dentry = Entry(from_dict={
+        'filename': filename,
+        'categories': 'M',
+        'type': 'collection',
+        'name': name,
+    })
+
+    browser = Browser(directory)
+    browser.filename = filename
+    browser.name = name
+    if entry_filter != '':
+        incf, excf = read_filter(entry_filter)
+        browser.entries = sorted([entry for k, entry in directory.get_filtered(incf, excf)], key=lambda x: x.filename)
+        if len(browser.entries) > 0:
+            dentry.filename_thumb = browser.entries[0].filename_thumb
+    elif date != '':
+        browser.entries = sorted([entry for k, entry in directory.get_date(date)], key=lambda x: x.filename)
+        if len(browser.entries) > 0:
+            dentry.filename_thumb = browser.entries[0].filename_thumb
+    link = '/view:' + (flt.replace('M', '') or '-') + '/' + filename
+
+    directory.entries[filename] = dentry
+    browser.save()
+
+    return template('templates/collection.tpl', top='/', created_name=name, created_link=link, flt=flt)
+
+@get('/sort/<path:path>')
+def sort_collection(path):
+    entry = directory[path]
+    if entry.entry_type == 'collection':
+        browser = Browser(directory)
+        browser.load(path)
+        browser.entries = sorted(browser.entries, key=lambda x: x.filename)
+        browser.save()
+        return ', '.join([entry.filename for entry in browser.entries])
+    else:
+        raise HTTPError(401, "Not a collection")
+
+
+
+@get('/thumb/<path:path>')
+def get_thumb(path):
+    entry = directory[path]
+    return static_file(entry.filename_thumb, root=basepath)
+
+@get('/preview/<path:path>')
+def get_preview(path):
+    return static_file(path + ".preview", root=basepath)
+
+@get('/js/<file>')
+def get_js(file):
+    return static_file(file, root='templates/js')
+
+@get('/css/<file>')
+def get_css(file):
+    return static_file(file, root='templates/css')
+
+@get('/img/<file>')
+def get_js(file):
+    return static_file(file, root='templates/img')
+debug(True)
+run()

@@ -1,0 +1,65 @@
+#!/usr/bin/env python3
+
+import os
+from datetime import datetime
+from optparse import OptionParser
+import json
+
+# Options
+from images.browser import Browser
+
+parser = OptionParser(usage="export_images [options] entries..")
+parser.add_option('-f', '--root', dest='root', default=os.getenv('IMAGES_ROOT', None),
+    help='specify a root folder to use when starting (env $IMAGES_ROOT)')
+parser.add_option('-t', '--target', dest='target',
+    help='folder to export to')
+parser.add_option('-r', '--resolution', dest='resolution', type=int,
+    help='resolution (longest side)')
+
+options, args = parser.parse_args()
+
+
+from images.directory import Directory
+from images.entry import Entry
+from images.scanner import Scanner
+
+basepath = options.root or '.'
+directory_file = os.path.join(basepath, ".directory.json")
+settings_file = os.path.join(basepath, ".settings.json")
+directory = Directory(basepath)
+
+# Load settings
+if os.path.exists(settings_file):
+    directory.load_settings(settings_file)
+else:
+    directory.settings_file = settings_file
+
+# Load directory
+print("Loading directory %s" % directory_file)
+if os.path.exists(directory_file):
+    directory.load(directory_file)
+else:
+    directory.directory_file = directory_file
+
+target = options.target or directory.settings.get('export_target', '.')
+resolution = options.resolution or directory.settings.get('export_resolution', 1000)
+
+target = os.path.expanduser(target)
+
+for k in args:
+    if not k in directory:
+        print('Entry %s does not exist!' % k)
+        continue
+
+    entry = directory[k]
+    if entry.entry_type == 'entry':
+        entry.export(basepath, resolution, target, entry.filename.rsplit('/', 1)[1])
+    elif entry.entry_type == 'collection':
+        browser = Browser(directory)
+        browser.load(k)
+        counter = 0
+        sub_target = os.path.join(target, k[:-11])
+        os.mkdir(sub_target)
+        for sub_entry in browser.get_filtered():
+            sub_entry.export(basepath, resolution, sub_target, 'img%04i.jpg' % counter)
+            counter += 1

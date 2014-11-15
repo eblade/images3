@@ -1,0 +1,134 @@
+#!/usr/bin/env python3
+
+import os
+from datetime import datetime
+from optparse import OptionParser
+import json
+
+# Options
+from images.browser import Browser
+
+parser = OptionParser(usage="update_images [options] what=index,delete,preview,thumbnail,proxy,unnew,cleanup,all")
+parser.add_option('-f', '--root', dest='root', default=os.getenv('IMAGES_ROOT', None),
+    help='specify a root folder to use when starting (env $IMAGES_ROOT)')
+
+options, args = parser.parse_args()
+
+do_index = True
+do_delete = True
+do_preview = False
+do_thumbnail = False
+do_unnew = False
+do_cleanup = False
+
+for arg in args:
+    if arg.startswith('no'):
+        arg = arg[2:]
+        value = False
+    else:
+        value = True
+    if arg == 'index':
+        do_index = value
+    elif arg == 'delete':
+        do_delete == value
+    elif arg == 'preview':
+        do_preview = value
+    elif arg == 'thumbnail':
+        do_thumbnail = value
+    elif arg == 'unnew':
+        do_unnew = value
+    elif arg == 'cleanup':
+        do_cleanup = value
+    elif arg == 'all':
+        do_index = value
+        do_delete = value
+        do_preview = value
+        do_thumbnail = value
+        do_unnew = value
+        do_cleanup = value
+    elif arg == 'proxy':
+        do_preview = value
+        do_thumbnail = value
+
+from images.directory import Directory
+from images.entry import Entry
+from images.scanner import Scanner
+
+basepath = options.root or '.'
+directory_file = os.path.join(basepath, ".directory.json")
+settings_file = os.path.join(basepath, ".settings.json")
+directory = Directory(basepath)
+
+# Load settings
+if os.path.exists(settings_file):
+    directory.load_settings(settings_file)
+else:
+    directory.settings_file = settings_file
+
+
+# Load directory
+print("Loading directory %s" % directory_file)
+if os.path.exists(directory_file):
+    directory.load(directory_file)
+    if do_delete:
+        deleted = directory.delete_all_in_category('D')
+        deldir = os.path.join(basepath, ".deleted")
+        if len(deleted) > 0:
+            if not os.path.exists(deldir):
+                os.mkdir(deldir)
+            t = datetime.now()
+            delfile = os.path.join(deldir, t.strftime("%Y%m%d_%H%M%S"))
+            with open(delfile, 'w') as d:
+                d.write(json.dumps(deleted, indent=2))
+else:
+    directory.directory_file = directory_file
+
+# Cleanup
+if do_cleanup:
+    cu_scanner = Scanner(basepath, ext=['thumbnail', 'preview'])
+    for f in cu_scanner.scan():
+        if f.endswith('.thumbnail'):
+            k = f[:-10]
+        else:
+            k = f[:-8]
+        if not k in directory:
+            print("Removing %s" % f)
+            f = os.path.join(basepath, f)
+            os.remove(f)
+    
+if do_unnew:
+    for k, entry in directory.get_filtered('N'):
+        entry.toggle_category('N')
+
+scanner = Scanner(basepath, ext=directory.settings.get('extension_filter', []))
+for f in scanner.scan():
+    if f in directory:
+        entry = directory[f]
+    else:
+        entry = Entry(f)
+        entry.categories = 'N'
+        directory[f] = entry
+        print("Added new file", f)
+    if f.endswith('.collection'):
+        browser = Browser(directory)
+        browser.load(entry.filename)
+        print("Collection %s" % entry.filename)
+        if entry.filename_thumb.endswith('.collection.thumbnail') or (entry.filename_thumb[:-10] not in directory):
+            print("Fixing thumbnail for collection...")
+            if len(browser.entries) > 0:
+                entry.filename_thumb = browser.entries[0].filename_thumb
+                print("Setting collection %s thumb to %s" % (entry.filename, browser.entries[0].filename_thumb))
+        entry.name = browser.name
+        if 'M' not in entry.categories:
+            entry.toggle_category('M')
+        continue
+    if do_index:
+        entry.read_exif(basepath)
+    if do_thumbnail:
+        if not os.path.exists(os.path.join(basepath, f+'.thumbnail')):
+            entry.create_thumbnail(basepath)
+    if do_preview:
+        if not os.path.exists(os.path.join(basepath, f+'.preview')):
+            entry.export(basepath, 1280, basepath, f+'.preview')
+
+directory.save()
