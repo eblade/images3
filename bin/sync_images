@@ -138,9 +138,9 @@ def create_folder(basepath, filepath, verify, create):
     dirpath = os.path.dirname(filepath)
     if not dirpath:
         return
-    parts = os.path.split(dirpath)
+    parts = dirpath.split(os.sep)
     checked = []
-    for part in parts[1:]:
+    for part in parts:
         checked.append(part)
         this_dir = os.path.join(*checked)
         if not verify(this_dir):
