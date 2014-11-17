@@ -72,10 +72,7 @@ if '.directory.json' in remote_files:
     print("Remote directory has %i entries" % len(remote_directory.entries))
         
 else:
-    print("Writing remote directory...")
-    ftp.storbinary('STOR .directory.json', open(directory_file, 'rb'))
-    print("Please rerun.")
-    exit(0)
+    print("There is no remote directory.")
 
 # Load local deleted files
 local_deleted = []
@@ -107,7 +104,7 @@ for k in remote_deleted:
     if k in directory:
         print("LOCAL xxx", k)
         entry = directory[k]
-        entry.delete_from_disk(self.basepath)
+        entry.delete_from_disk(basepath)
         del directory[k]
 
 # Remove remote deleted files marked locally
