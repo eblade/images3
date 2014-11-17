@@ -49,6 +49,9 @@ class Directory:
     def __getitem__(self, key):
         return self.entries.get(key)
 
+    def __delitem__(self, key):
+        del self.entries[key]
+
     def __contains__(self, key):
         return key in self.entries
 
@@ -65,6 +68,13 @@ class Directory:
         self.directory_file = filename or self.directory_file
         with open(self.directory_file, 'r') as f:
             self.entries = {k: Entry(from_dict=v) for k, v in json.load(f).items()}
+
+    def save_file(self, f):
+        self.directory_file = None
+        f.write(json.dumps({k: v.to_dict() for k, v in self.entries.items()}, indent=2))
+
+    def load_string(self, string):
+        self.entries = {k: Entry(from_dict=v) for k, v in json.loads(string).items()}
 
     def save_settings(self, filename=None):
         self.settings_file = filename or self.settings_file

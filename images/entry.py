@@ -5,6 +5,7 @@ import os
 import threading
 from PIL import Image
 from math import pi
+from time import time
 
 IMAGE = 'image'
 COLLECTION = 'collection'
@@ -23,13 +24,14 @@ orientation2angle = {
 class Entry:
     def __init__(self, filename=None, from_dict=None):
         self.filename = filename
-        self.filename_thumb = str(self.filename) + '.thumbnail'
-        self.filename_preview = str(self.filename) + '.preview'
+        self.filename_thumb = str(filename) + '.thumbnail'
+        self.filename_preview = str(filename) + '.preview'
         self.categories = ""
         self.angle = 0
         self.height = 0
         self.width = 0
         self.comment = None
+        self.modified = 0.0
         if filename and filename.endswith('.collection'):
             self.entry_type = COLLECTION
         elif filename and filename.endswith('.note'):
@@ -51,6 +53,7 @@ class Entry:
         exif = im._getexif()
         orientation = exif.get(274)
         self.angle = orientation2angle[int(orientation)]
+        self.modified = time()
 
     def create_thumbnail(self, basepath, override=False):
         infile = os.path.join(basepath, self.filename)
@@ -101,11 +104,13 @@ class Entry:
             'type': self.entry_type,
             'name': self.name,
             'thumb': self.filename_thumb,
+            'modified': self.modified,
         }
 
     def from_dict(self, d):
         self.filename = d.get('filename', '')
         self.filename_thumb = d.get('thumb') or (self.filename + '.thumbnail')
+        self.filename_preview = d.get('preview') or (self.filename + '.preview')
         self.categories = d.get('categories', "")
         self.angle = d.get('angle', 0)
         self.height = d.get('height', 0)
@@ -113,6 +118,7 @@ class Entry:
         self.comment = d.get('comment', None)
         self.entry_type = d.get('type', IMAGE)
         self.name = d.get('name', None)
+        self.modified = float(d.get('modified', 0.0))
 
     def rotate(self, delta):
         self.angle += delta
@@ -140,6 +146,7 @@ class Entry:
                     if r in self.categories:
                         self.toggle_category(r)
         self.categories = ''.join(sorted(self.categories))
+        self.modified = time()
         return self.categories
 
     def _resize(self, img, box, fit, out):
@@ -187,10 +194,13 @@ class Entry:
         thumb_filename = os.path.join(basepath, self.filename_thumb)
         preview_filename = os.path.join(basepath, self.filename_preview)
         filename = os.path.join(basepath, self.filename)
+        print("Deleting", thumb_filename)
         if os.path.exists(thumb_filename):
             os.remove(thumb_filename)
+        print("Deleting", preview_filename)
         if os.path.exists(preview_filename):
             os.remove(preview_filename)
+        print("Deleting", filename)
         if os.path.exists(filename):
             os.remove(filename)
         print("Deleted image %s" % self.filename)

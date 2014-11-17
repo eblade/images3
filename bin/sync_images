@@ -1,0 +1,254 @@
+#!/usr/bin/env python3
+
+import os
+from datetime import datetime
+from optparse import OptionParser
+import json
+from ftplib import FTP, error_perm, error_reply
+from io import BytesIO, StringIO
+from tempfile import mkstemp
+
+# Options
+from images.browser import Browser
+
+parser = OptionParser(usage="export_images [options] entries..")
+parser.add_option('-f', '--root', dest='root', default=os.getenv('IMAGES_ROOT', None),
+    help='specify a root folder to use when starting (env $IMAGES_ROOT)')
+
+options, args = parser.parse_args()
+
+
+from images.directory import Directory
+from images.entry import Entry
+from images.scanner import Scanner
+
+basepath = options.root or '.'
+directory_file = os.path.join(basepath, ".directory.json")
+settings_file = os.path.join(basepath, ".settings.json")
+directory = Directory(basepath)
+
+# Load settings
+if os.path.exists(settings_file):
+    directory.load_settings(settings_file)
+else:
+    directory.settings_file = settings_file
+
+# Load directory
+print("Reading local directory %s" % directory_file)
+if os.path.exists(directory_file):
+    directory.load(directory_file)
+    initialized = True
+    print("Local directory has %i entries" % len(directory.entries))
+else:
+    directory.directory_file = directory_file
+    initialized = False
+    print("There is no local directory.")
+
+def die(msg):
+    raise ValueError(msg)
+
+# Read settings for sync
+originals = directory.settings.get('originals', True)
+ftp_settings = directory.settings.get('sync') or die("Missing sync settings")
+host = ftp_settings.get('host') or die('Missing host')
+port = ftp_settings.get('port') or die('Missing port')
+user = ftp_settings.get('user') or die('Missing user')
+password = ftp_settings.get('password') or die('Missing password')
+path = ftp_settings.get('path') or die('Missing path')
+
+# Setup FTP connection
+ftp = FTP(host, user, password)
+ftp.cwd(path)
+remote_files = ftp.nlst()
+
+# Load remote directory
+remote_directory = Directory(basepath)
+if '.directory.json' in remote_files:
+    print("Reading remote directory...")
+    json_data = []
+    ftp.retrlines('RETR .directory.json', json_data.append)
+    json_data = '\n'.join(json_data)
+    remote_directory.load_string(json_data)
+    print("Remote directory has %i entries" % len(remote_directory.entries))
+        
+else:
+    print("Writing remote directory...")
+    ftp.storbinary('STOR .directory.json', open(directory_file, 'rb'))
+    print("Please rerun.")
+    exit(0)
+
+# Load local deleted files
+local_deleted = []
+if os.path.exists(os.path.join(basepath, '.deleted')):
+    print("Reading local deleted files...")
+    scanner = Scanner(os.path.join(basepath, '.deleted'))
+    for filename in scanner.scan():
+        print(" - %s" % filename)
+        local_deleted.extend(json.load(open(os.path.join(basepath, '.deleted', filename), 'r')))
+    print("Local deleted has %i entries" % len(local_deleted))
+    
+# Load remote deleted files
+remote_deleted = []
+if '.deleted' in remote_files:
+    print("Reading remote deleted files...")
+    f = StringIO()
+    ftp.retrlines("RETR .deleted", remote_deleted.append)
+    print("Remoted deleted has %i entries" % len(remote_deleted))
+
+# Merged deleted into deleted files
+all_deleted = list(remote_deleted)
+for deleted_file in local_deleted:
+    if deleted_file not in remote_deleted:
+        all_deleted.append(deleted_file)
+print("Merged deleted has %i entries" % len(all_deleted))
+
+# Remove local deleted files marked remotely
+for k in remote_deleted:
+    if k in directory:
+        print("LOCAL xxx", k)
+        entry = directory[k]
+        entry.delete_from_disk(self.basepath)
+        del directory[k]
+
+# Remove remote deleted files marked locally
+for k in local_deleted:
+    if k in remote_directory:
+        print(host, 'xxx', k)
+        entry = remote_directory[k]
+        try:
+            ftp.delete(k)
+        except (error_reply, error_perm) as e:
+            print("FTP ERROR (delete):", e)
+        if entry.entry_type == 'image':
+            try:
+                ftp.delete("%s.thumbnail" % k)
+            except (error_reply, error_perm) as e:
+                print("FTP ERROR (delete thumbnail):", e)
+            try:
+                ftp.delete("%s.preview" % k)
+            except (error_reply, error_perm) as e:
+                print("FTP ERROR (delete preview):", e)
+        del remote_directory[k]
+
+print("After deletion: %i local, %i remote entries" % (
+      len(directory.entries), len(remote_directory.entries)))
+
+def verify_ftp(path):
+    r = list(ftp.mlsd(path))
+    return len(r) > 0
+
+def create_folder(basepath, filepath, verify, create):
+    dirpath = os.path.dirname(filepath)
+    if not dirpath:
+        return
+    parts = os.path.split(dirpath)
+    checked = []
+    for part in parts[1:]:
+        checked.append(part)
+        this_dir = os.path.join(*checked)
+        if not verify(this_dir):
+            print("Creating", this_dir)
+            create(this_dir)
+
+# Copy new local files and entries to server
+for k, local_entry in directory.entries.items():
+    if k not in remote_directory:
+        print(host, '<--', k)
+        create_folder(path, k, verify_ftp, ftp.mkd)
+        if originals or local_entry.entry_type == 'collection':
+            try:
+                ftp.storbinary("STOR %s" % k, open(os.path.join(basepath, k), 'rb'))
+                remote_directory[k] = local_entry
+            except (error_reply, error_perm) as e:
+                print("FTP ERROR:", e)
+        if local_entry.entry_type == 'image':
+            try:
+                ftp.storbinary("STOR %s.thumbnail" % k, open(os.path.join(basepath, k+'.thumbnail'), 'rb'))
+            except (error_reply, error_perm) as e:
+                print("FTP ERROR:", e)
+            try:
+                ftp.storbinary("STOR %s.preview" % k, open(os.path.join(basepath, k+'.preview'), 'rb'))
+            except (error_reply, error_perm) as e:
+                print("FTP ERROR:", e)
+    else:
+        remote_entry = remote_directory[k]
+        if local_entry.modified > remote_entry.modified:
+            print(host, "<-m", k)
+            remote_entry.categories = local_entry.categories
+            remote_entry.name = local_entry.name
+            remote_entry.comment = local_entry.comment
+            remote_entry.modified = local_entry.modified
+            if local_entry.entry_type == 'collection':
+                print(host, "<-c", k)
+                remote_entry.filename_thumb = local_entry.filename_thumb
+                try:
+                    ftp.storbinary("STOR %s" % k, open(os.path.join(basepath, k), 'rb'))
+                    remote_directory[k] = local_entry
+                except (error_reply, error_perm) as e:
+                    print("FTP ERROR:", e)
+            
+
+# Copy new remote files and entries to here
+for k, remote_entry in remote_directory.entries.items():
+    if k not in directory:
+        print(host, '-->', k)
+        create_folder(basepath, k, os.path.isdir, os.mkdir)
+        if originals or remote_entry.entry_type == 'collection':
+            try:
+                with open(os.path.join(basepath, k), 'wb') as f:
+                    ftp.retrbinary("RETR %s" % k, f.write)
+                directory[k] = remote_entry
+            except (error_reply, error_perm) as e:
+                print("FTP ERROR:", e)
+        else:
+            directory[k] = remote_entry
+        if remote_entry.entry_type == 'image':
+            try:
+                with open(os.path.join(basepath, k+'.thumbnail'), 'wb') as f:
+                    ftp.retrbinary("RETR %s.thumbnail" % k, f.write)
+            except (error_reply, error_perm) as e:
+                print("FTP ERROR:", e)
+            try:
+                with open(os.path.join(basepath, k+'.preview'), 'wb') as f:
+                    ftp.retrbinary("RETR %s.preview" % k, f.write)
+            except (error_reply, error_perm) as e:
+                print("FTP ERROR:", e)
+    else:
+        local_entry = directory[k]
+        if remote_entry.modified > local_entry.modified:
+            print(host, "m->", k)
+            local_entry.categories = remote_entry.categories
+            local_entry.name = remote_entry.name
+            local_entry.comment = remote_entry.comment
+            local_entry.modified = remote_entry.modified
+            if remote_entry.entry_type == 'collection':
+                print(host, "c->", k)
+                local_entry.filename_thumb = remote_entry.filename_thumb
+                try:
+                    with open(os.path.join(basepath, k), 'wb') as f:
+                        ftp.retrbinary("RETR %s" % k, f.write)
+                    directory[k] = remote_entry
+                except (error_reply, error_perm) as e:
+                    print("FTP ERROR:", e)
+            
+
+
+# Save local directory
+print("Writing local directory (%s)..." % directory.directory_file)
+directory.save()
+
+# Save remote directory
+fh, fpath = mkstemp()
+print("Writing remote directory (%s)..." % fpath)
+remote_directory.save(fpath)
+ftp.storbinary('STOR .directory.json', open(fpath, 'rb'))
+
+# Save remote deleted
+fh, fpath = mkstemp()
+print("Writing remote deleted (%s)..." % fpath)
+with open(fpath, 'w') as f:
+    f.write('\n'.join(all_deleted))
+ftp.storbinary('STOR .deleted', open(fpath, 'rb'))
+print("Done")
+
+ftp.quit()
