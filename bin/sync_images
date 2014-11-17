@@ -139,7 +139,7 @@ def create_folder(basepath, filepath, verify, create):
     if not dirpath:
         return
     parts = dirpath.split(os.sep)
-    checked = []
+    checked = [basepath]
     for part in parts:
         checked.append(part)
         this_dir = os.path.join(*checked)

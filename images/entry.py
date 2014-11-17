@@ -52,8 +52,10 @@ class Entry:
         im = Image.open(infile)
         exif = im._getexif()
         orientation = exif.get(274)
+        old_angle = self.angle
         self.angle = orientation2angle[int(orientation)]
-        self.modified = time()
+        if old_angle != self.angle:
+            self.modified = time()
 
     def create_thumbnail(self, basepath, override=False):
         infile = os.path.join(basepath, self.filename)

@@ -65,6 +65,9 @@ if os.path.exists(settings_file):
 else:
     directory.settings_file = settings_file
 
+if not directory.settings.get('originals', True):
+    print("Can't update a proxy directory!")
+    exit(0)
 
 # Load directory
 print("Loading directory %s" % directory_file)
