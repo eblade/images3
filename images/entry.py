@@ -77,6 +77,10 @@ class Entry:
         
     def export(self, basepath, longest_edge, output_dir, output_filename):
         infile = os.path.join(basepath, self.filename)
+        rotate = True
+        if not os.path.exists(infile):
+            infile = os.path.join(basepath, self.filename_preview)
+            rotate = False
         outfile = os.path.join(output_dir, output_filename)
         try:
             im = Image.open(infile)
@@ -88,7 +92,7 @@ class Entry:
                     scale = float(longest_edge) / float(self.height)
                 w = int(self.width * scale)
                 h = int(self.height * scale)
-                self._resize(im, (w, h), False, out)
+                self._resize(im, (w, h), False, out, rotate)
                 print("Created image", outfile)
         except ValueError:
             print("Cannot export '%s' -> '%s' (ValueError)" % (infile, outfile))
@@ -151,7 +155,7 @@ class Entry:
         self.modified = time()
         return self.categories
 
-    def _resize(self, img, box, fit, out):
+    def _resize(self, img, box, fit, out, rotate=True):
         '''Downsample the image.
         @param img: Image -  an Image-object
         @param box: tuple(x, y) - the bounding box of the result image
@@ -185,7 +189,7 @@ class Entry:
 
         #Resize the image with best quality algorithm ANTI-ALIAS
         img.thumbnail(box, Image.ANTIALIAS)
-        if self.angle:
+        if self.angle and rotate:
             img = img.rotate(self.angle)
 
         #save it into a file-like object
