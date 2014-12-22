@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
 
-import pygame
 import os
 import threading
 from PIL import Image

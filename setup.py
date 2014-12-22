@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
-from distutils.core import setup
+#from distutils.core import setup
+from setuptools import setup
 
 name_ = 'images'
 version_ = '3.0.1'
@@ -29,6 +30,6 @@ setup(
     download_url=('https://github.com/eblade/%s/archive/v%s.tar.gz'
                   % (name_, version_)),
     packages=packages_,
-    scripts=['bin/images', 'bin/update_images', 'bin/export_images'],
+    scripts=['bin/images', 'bin/update_images', 'bin/export_images', 'bin/sync_images'],
     classifiers = classifiers
 )
